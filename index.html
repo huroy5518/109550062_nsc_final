@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
+        <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+        <title>FileReceiver</title>
+        <style>
+            body {background-color:lightsalmon;}
+            .download-list {
+                transition-duration: 0.25s;
+            }
+            .download-list:hover {
+                background: #7c64d6;
+            }
+        </style>
+        <script>
+            var tracker_set = false;
+            var mysocket;
+            var peerConnection;
+            var datachannel;
+            var cur_file_id;
+            var conn_list = {}
+            var prop_list = {}
+
+            // const configuration = {urls: ['stun:stun.l.google.com:19302']};
+            const configuration = null
+            function onIceCandidate(peerConnection, conn, e) {
+                // peerConnection.addIceCandidate(e.candidate)
+                // console.log(e.candidate)
+                // console.log("in on ice candidate")
+                // console.log(e.candidate.toJSON())
+                if(e.candidate !== null) {
+                    req = {
+                        'type': 'REQUEST_CLIENT_ICE_CAND',
+                        'conn': conn,
+                        'offer': peerConnection.localDescription,
+                        'cand': e.candidate.toJSON()
+                    }
+                } else {
+                    req = {
+                        'type': 'REQUEST_CLIENT_ICE_CAND',
+                        'conn': conn,
+                        'offer': peerConnection.localDescription,
+                    }
+                    // return;
+                }
+                // console.log(peerConnection.localDescription.sdp)
+                mysocket.send(JSON.stringify(req))
+                // console.log(peerConnection.localDescription.sdp)
+            }
+            function filechannelClose(prop, e) {
+                console.log(prop)
+                if(prop['content'].length > 0) {
+                    const blob = new Blob([prop['content']], {type: 'text/plain'});
+                    const elem = window.document.createElement('a');
+                    elem.href = window.URL.createObjectURL(blob);
+                    elem.download = prop['file_name'];        
+                    document.body.appendChild(elem);
+                    elem.click();        
+                    document.body.removeChild(elem);
+                    req = {'type': 'REQUEST_CLIENT_REGISTER', 'file_id': cur_file_id, 'file': [prop['file_name']]}
+                    mysocket.send(JSON.stringify(req))
+                    let upload = document.getElementById('upload_list')
+                    upload.innerHTML += '<li class="list-group-item"><span class="h4 m-5">' + prop['file_name'] + '</span></li>'
+                }
+                console.log("file channel success close")
+            }
+
+            function filechannelMessage(prop, e) {
+                prop['content'] = e.data
+                console.log("file channel success message")
+            }
+
+            function filechannelOpen(e) {
+                console.log("file channel success opened")
+            }
+            async function downloadFile(elem) {
+                // console.log(elem.dataset.conn)
+                // peerConnection = new RTCPeerConnection(configuration);
+                peerConnection = new RTCPeerConnection(
+                {
+                    'iceServers': [
+                        {
+                            'urls': ['stun:stun.l.google.com:19302', ],
+                        },
+                        // TODO: change this to configurable
+                        // This is for demo use, you should change it for your turn server
+                        {
+                            'urls': ['turn:192.168.2.220:3478'],
+                            // 'urls': ['turn:140.113.67.69:34780'],
+                            'username': 'demo',
+                            'credential': 'demo'
+                        }
+                    ],
+                })
+                conn_list[elem.dataset.conn] = peerConnection
+                peerConnection.onicecandidate = (e) => onIceCandidate(peerConnection, elem.dataset.conn, e);
+                datachannel = await peerConnection.createDataChannel('file')
+                datachannel.binaryType = 'arraybuffer'
+                let prop = new Object()
+                prop['file_name'] = elem.innerHTML
+                prop_list[elem.innerHTML] = prop
+                datachannel.onmessage = (e) => filechannelMessage(prop, e)
+                datachannel.onopen = filechannelOpen
+                datachannel.onclose = (e) => filechannelClose(prop, e)
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer)
+                // req = {'type': 'REQUEST_CLIENT_OFFER', 'file_id': elem.innerHTML, 'conn': elem.dataset.conn, 'offer': peerConnection.localDescription}
+                // console.log(offer)
+                req = {'type': 'REQUEST_CLIENT_OFFER', 'file_id': cur_file_id, 'file_name': elem.innerHTML, 'conn': elem.dataset.conn, 'offer': offer}
+                console.log(req)
+                // console.log("in download file")
+                mysocket.send(JSON.stringify(req))
+            }
+            function socket_opened(e) {
+                tracker_set = true
+                let f_id_status = document.getElementById('tracker_ip_status')
+                f_id_status.innerHTML = "Success"
+                console.log("success open")
+            }
+            function socket_closed(e) {
+                if(tracker_set === false) {
+                    console.log("set status")
+                    let elem = document.getElementById('tracker_ip_status')
+                    elem.innerHTML = "Error"
+                }
+                tracker_set = false
+                console.log("success close")
+            }
+            function socket_error(s) {
+                console.log("success error")
+            }
+
+            function onDataChannel(pc, conn, file_name, e) {
+                console.log("success on datachannel")
+                console.log(e)
+                let channel = e.channel
+                console.log(prop_list)
+                channel.send(prop_list[file_name]['content'])
+                channel.close()
+            }
+            async function socket_message(e) {
+                console.log("success message")
+                let res = JSON.parse(e.data)
+                if(res.type === 'RESPONSE_ERR') {
+                    let elem = document.getElementById('file_id_status')
+                    elem.innerHTML = "Error"
+                }
+                else if(res.type === 'RESPONSE_LIST') {
+                    let f_id_status = document.getElementById('file_id_status')
+                    f_id_status.innerHTML = "Success"
+                    let elem = document.getElementById('file_list')
+                    let tags = ''
+                    console.log(res)
+                    for(let i = 0; i < res.files.length; i ++) {
+                        for(let j = 0; j < res.files[i].file_list.length; j ++) {
+                           tags += '<li class="list-group-item download-list"><span class="h4 m-5 text-center" onclick="downloadFile(this)" data-conn="' + res.files[i].conn + '">' + res.files[i].file_list[j] + '</span><span class="h4">\t\t'+ res.files[i].conn + '</span></li>'
+                        }
+                    }
+                    elem.innerHTML += tags
+                } else if(res.type === 'RESPONSE_SERVER_ANSWER') {
+                    console.log('Receive answer')
+                    
+                    // peerConnection.setRemoteDescription(new RTCSessionDescription({'sdp':res.answer, 'type':'answer'}))
+                    console.log(res.src)
+                    conn_list[res.src].setRemoteDescription(new RTCSessionDescription({'sdp':res.answer, 'type':'answer'}))
+                    // conn_list[res.conn]
+                }
+                else if(res.type === 'REQUEST_CLIENT_OFFER') {
+                    peerConnection = new RTCPeerConnection(
+                    {
+                        'iceServers': [
+                            {
+                                'urls': ['stun:stun.l.google.com:19302'],
+                            },
+                        ],
+                    })
+                    conn_list[res.src] = peerConnection
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription({'sdp': res.offer.sdp, 'type': res.offer.type}))
+                    answer = await peerConnection.createAnswer()
+                    await peerConnection.setLocalDescription(answer)
+                    peerConnection.ondatachannel = (e) => onDataChannel(peerConnection, res.src, res.file_name, e);
+                    peerConnection.onicecandidate = (e) => onIceCandidate(peerConnection, res.src, e)
+                    response = {
+                        'type': 'RESPONSE_SERVER_ANSWER',
+                        'src': res.conn,
+                        'conn': res.src,
+                        'answer': peerConnection.localDescription.sdp
+                    }
+                    console.log(response)
+                    mysocket.send(JSON.stringify(response))
+                } else if(res.type === 'REQUEST_CLIENT_ICE_CAND') {
+                    // conn_list[res.src].setRemoteDescription(new RTCSessionDescription({'sdp': res.offer.sdp, 'type': res.offer.type}))
+                    console.log(res)
+                    conn_list[res.src].addIceCandidate(new RTCIceCandidate(res.cand))
+                }
+            }
+            
+            function handle_tracker_server() {
+                let elem = document.getElementById("tracker_ip")
+                console.log(elem.value)
+                mysocket = new WebSocket("ws://" + elem.value)
+                mysocket.onopen = socket_opened
+                mysocket.onmessage = socket_message
+                mysocket.onclose = socket_closed
+                mysocket.error = socket_error
+            }
+            function handle_file_id() {
+                let elem = document.getElementById("file_id")
+                console.log(elem.value)
+                var data = {
+                    'type': 'REQUEST_CLIENT',
+                    'file_id': String(elem.value),
+                    'action': 'list'
+                }
+                cur_file_id = String(elem.value)
+                if(tracker_set) {
+                    mysocket.send(JSON.stringify(data))
+                }
+            }
+        </script>
+    </head>
+    <body>
+        <div class="container-fluid d-flex justify-content-center">
+            <div class = "container-lg d-flex justify-content-center mt-5 bg-white rounded">
+                <div class="fs-1 fw-bold p-5">
+                    FileReceiver
+                </div>
+            </div>
+        </div>
+        <div class="container-fluid d-flex justify-content-center" id="tracker">
+            <div class = "d-inline-flex align-items-center justify-content-center bg-white rounded justify-content-center m-3" style = "width: 40%">
+                <div class="p-5 fs-3 fw-bold">
+                    Tracker
+                </div>
+                <div>
+                    <!-- <input type="text" id="tracker_ip" name="tracker_ip" class="form-control"/> -->
+                    <input type="text" id="tracker_ip" name="tracker_ip"/>
+                    <button onclick="handle_tracker_server()">submit</button>
+                    <label id="tracker_ip_status" style="width:60px"></label>
+                </div>
+            </div>
+            <div class = "d-inline-flex align-items-center justify-content-center bg-white rounded justify-content-center m-3" style = "width: 40%">
+                <div class="p-5 fs-3 fw-bold">
+                    File ID
+                </div>
+                <input type="text" id="file_id" name="file_id"/>
+                <button onclick="handle_file_id()">submit</button>
+                <label id="file_id_status" style="width:60px"></label>
+            </div>
+        </div>
+        <div class = "container-fluid d-flex justify-content-center m-1">
+            <div class = "container d-inline-flex justify-content-center bg-white p-5 rounded">
+                <ul id="file_list" class="list-group">
+                    <li class="list-group-item h4 text-center fw-bold">Download File List</li>
+                <ul>
+
+            </div>
+        </div>
+        <div class = "container-fluid d-flex justify-content-center m-1">
+            <div class = "container d-flex justify-content-center bg-white p-5 rounded">
+                <ul id="upload_list" class="list-group">
+                    <li class="list-group-item h4 text-center fw-bold">Upload File List</li>
+                <ul>
+            </div>
+        </div>
+    </body>
+</html>
